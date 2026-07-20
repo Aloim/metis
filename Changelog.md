@@ -4,6 +4,21 @@ All notable changes to **Metis**. The authoritative version marker is `version` 
 
 ---
 
+## v0.3 (2026-07-20)
+
+Install model reworked to match Phanes: one file, self-bootstrapping, with a run counter.
+
+### Added
+- **One-file install, like Phanes.** `metis.md` is now the single distributed file. Copy it to `~/.claude/commands/metis.md` (all projects) or `<project>/.claude/commands/metis.md` (one project) and run `/metis`; the command self-refreshes from the repository and, on the first run, fetches its own engine.
+- **Install-scope choice.** The first run asks, once, whether to install for all projects (engine at `~/.claude/metis/`, per-project state under `<project>/.metis/`) or just this project (engine and state under `<project>/metis/`). Non-interactive runs default to global and record it. A Phanes project keeps its capability manifest and ledger under `<project>/.phanes/` regardless of scope.
+- **Per-project run counter.** The first run is install plus optimization; every later run is an update check plus optimization. The counter and install state persist in `state.json` in the state directory.
+
+### Changed
+- **Repository layout.** The command moved to the repository root as `metis.md` (the file users copy, parallel to `phanes.md`); the engine moved into `src/`, so the root stays clean and the engine is a self-contained fetchable set.
+- Version stamps bumped to `0.3.0` (`package.json`, `version.mjs`, the command stamp).
+
+---
+
 ## v0.2 (2026-07-20)
 
 First public release. It takes the internal audit prototype and adds the capability census and consent contract, genericized policy derivation, the optimization ledger, the `/metis` command, a single dispatcher, and a self-update check.

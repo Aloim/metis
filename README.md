@@ -29,7 +29,9 @@ It is not a telemetry pipeline or a dashboard. Think of it as a counsel you re-r
 
 ## What it does
 
-Every run walks the same path. Each step is a deterministic Node command; you interpret its output.
+Metis installs like Phanes: you copy one file, `metis.md`, as your `/metis` command, and it bootstraps its own engine on the first run. It keeps a per-project run counter, so the **first run installs the engine and runs an optimization pass**, and **every later run does an update check and another optimization pass**. The engine itself is deterministic Node; you interpret its output.
+
+Every optimization pass walks the same path:
 
 **1. Detect and gate.** Metis works out whether the project is standalone or Phanes-managed, whether a transcript directory exists, and whether there is anything to optimize at all. A setup with no MCP servers, no plugins, no skills, and no agents has nothing to build policy around, so Metis stops and says so rather than emitting an empty report. It also self-checks this repository for a newer release and surfaces the notice when one has shipped.
 
@@ -43,19 +45,19 @@ Every run walks the same path. Each step is a deterministic Node command; you in
 
 ## How to use
 
-Metis has one entry point, the `metis.mjs` dispatcher. Run any command from your project root.
+Most users only ever type `/metis`. That command is the front end: on the first run it asks the install scope and fetches its own engine, and on every run it asks the consent question through the harness, runs the audit, and presents the checklist. It never runs unbidden.
+
+For direct or scripted use, call the engine dispatcher at `<engineDir>/metis.mjs`, where `<engineDir>` is the folder the first run created (`~/.claude/metis/` for a global install, `<project>/metis/` for a per-project one).
 
 | Command | What it does |
 | --- | --- |
-| `node metis.mjs detect --project .` | Mode, companion presence, the update check, and whether there is anything to optimize (an early stop when not). |
-| `node metis.mjs census --project .` | Detect capabilities, propose a per-item selection, diff against the prior manifest. `--set-selection a,b` persists the consented selection. |
-| `node metis.mjs audit --project . --harvest <dir> --last N` | Run the transcript audit. `--dir` is derived from `--project`; `--harvest` preserves the volatile task store first. |
-| `node metis.mjs ledger --project . --audit <report.json> --verify` | Verification-first scoring of the ledger (Phanes mode). `--propose` lists strong-signal proposals. |
-| `node metis.mjs version --check` | Print the version and check the repository for a newer release. |
+| `metis.mjs detect --project .` | Mode, companion presence, the update check, and whether there is anything to optimize (an early stop when not). |
+| `metis.mjs census --project .` | Detect capabilities, propose a per-item selection, diff against the prior manifest. `--set-selection a,b` persists the consented selection. |
+| `metis.mjs audit --project . --harvest <dir> --out <dir> --last N` | Run the transcript audit. `--dir` is derived from `--project`; `--harvest` preserves the volatile task store first. |
+| `metis.mjs ledger --project . --audit <report.json> --verify` | Verification-first scoring of the ledger (Phanes mode). `--propose` lists strong-signal proposals. |
+| `metis.mjs version --check` | Print the version and check the repository for a newer release. |
 
-The `/metis` slash command is the interactive front end: it runs these, asks the consent question through the harness, and presents the checklist. It never runs unbidden.
-
-Each piece also runs on its own (`node census.mjs`, `node session-audit.mjs`, `node ledger.mjs`, `node policy.mjs`, `node version.mjs`), and `node --test` runs the suite.
+Each piece also runs on its own from the source tree (`node src/census.mjs`, `node src/session-audit.mjs`, `node src/ledger.mjs`, `node src/policy.mjs`, `node src/version.mjs`), and `node --test` runs the suite.
 
 ### Policy derivation
 
@@ -80,41 +82,46 @@ Claude Code stores main transcripts under `~/.claude/projects/<encoded-project-p
 
 ## How to install
 
-Metis is a small Node tool plus one slash command. It needs [Claude Code](https://claude.com/claude-code) and Node 18 or newer; it has no other dependencies.
+Metis is one file, exactly like Phanes. You install the `metis.md` command, run `/metis` once, and it fetches its own engine on the first run. It needs [Claude Code](https://claude.com/claude-code) and Node 18 or newer; there is nothing to clone and no dependencies to install.
 
-### 1. Clone the repository
+### Install the command
 
-```bash
-git clone https://github.com/Aloim/metis
-```
-
-### 2. Run it
-
-From any project you want to audit:
-
-```bash
-node /path/to/metis/metis.mjs detect --project .
-```
-
-That reports what Metis sees and whether there is anything to optimize. From there, `census`, `audit`, and (on a Phanes project) `ledger` do the rest.
-
-### 3. Optional: install the `/metis` slash command
-
-Copy the command source so Claude Code exposes `/metis`:
+For **all projects** (global), put it in your user commands folder:
 
 **Linux / macOS:**
 
 ```bash
 mkdir -p ~/.claude/commands
-cp /path/to/metis/commands/metis.md ~/.claude/commands/metis.md
+curl -L https://raw.githubusercontent.com/Aloim/metis/main/metis.md \
+  -o ~/.claude/commands/metis.md
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\commands" | Out-Null
-Copy-Item /path/to/metis/commands/metis.md "$env:USERPROFILE\.claude\commands\metis.md"
+Invoke-WebRequest `
+  -Uri https://raw.githubusercontent.com/Aloim/metis/main/metis.md `
+  -OutFile "$env:USERPROFILE\.claude\commands\metis.md"
 ```
+
+For a **single project**, put it in that project's commands folder instead (`.claude/commands/metis.md` under the project root).
+
+### Run it
+
+Open a project in Claude Code and type:
+
+```
+/metis
+```
+
+The first run asks whether to install for all projects or just this one, fetches the engine into its folder, audits, and presents the checklist. Every later run does an update check and audits again. Anything after the command is treated as a directive, for example `/metis reinstall` or `/metis verify only`.
+
+### What the first run creates
+
+- The **engine**: `~/.claude/metis/` for a global install, or `<project>/metis/` for a per-project one.
+- The **per-project state**: `<project>/.metis/` for a global install (so projects stay separated), or alongside the engine for a per-project install. It holds the run counter, the standalone manifest, and the reports.
+- On a **Phanes project**, the capability manifest and the optimization ledger live in `<project>/.phanes/`, per the Phanes contract, whichever install scope you chose.
 
 The command calls the engine as `node <metis-dir>/metis.mjs`; point it at wherever you cloned the repository. Installing the command is also what lets a Phanes-managed project detect Metis and call it during update runs.
 
@@ -139,7 +146,7 @@ Metis is a [Phanes](https://github.com/Aloim/phanes) companion tool, in the same
 
 ## Version
 
-Current: **v0.2** (2026-07-20). First public release: the audit engine plus the capability census and consent contract, genericized policy derivation, the optimization ledger with verification-first scoring, the `/metis` command, the single dispatcher, and a self-update check against this repository. The full history is in [`Changelog.md`](Changelog.md). Metis also checks this repository on invocation and tells you when a newer release has shipped.
+Current: **v0.3** (2026-07-20). Metis now installs like Phanes: one `metis.md` command that self-bootstraps its engine on the first run, with an install-scope choice (all projects or just this one) and a per-project run counter, so the first run installs and optimizes and every later run does an update check and optimizes again. It builds on v0.2, which was the first public release of the audit engine plus the capability census and consent contract, genericized policy derivation, and the optimization ledger with verification-first scoring. The full history is in [`Changelog.md`](Changelog.md). Metis also checks this repository on invocation and tells you when a newer release has shipped.
 
 ---
 

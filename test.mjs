@@ -13,12 +13,12 @@ import {
   encodeProjectDir, transcriptDirFor, detectMode, manifestPathFor,
   census, proposeSelection, diffSelection, readSelection, writeSelection,
   assessOptimizability, PHANES_STANDARD,
-} from './census.mjs';
+} from './src/census.mjs';
 import {
   loadLedger, saveLedger, addEntry, serverUsage, windowSize, verify, candidateProposals,
   ledgerPathFor,
-} from './ledger.mjs';
-import { derivePolicy } from './policy.mjs';
+} from './src/ledger.mjs';
+import { derivePolicy } from './src/policy.mjs';
 
 let counter = 0;
 function tmpProject() {

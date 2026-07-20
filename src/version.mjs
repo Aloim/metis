@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const METIS_REPO = 'Aloim/metis';
-export const METIS_VERSION = '0.2.0';
+export const METIS_VERSION = '0.3.0';
 const RAW_PACKAGE_URL = `https://raw.githubusercontent.com/${METIS_REPO}/main/package.json`;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -22,10 +22,13 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 // Local version, read from the sibling package.json, falling back to the
 // constant above.
 export function localVersion() {
-  try {
-    const j = JSON.parse(fs.readFileSync(path.join(HERE, 'package.json'), 'utf8'));
-    if (j && typeof j.version === 'string') return j.version;
-  } catch { /* fall through */ }
+  // package.json lives at the repo root, one level up from src/.
+  for (const rel of ['package.json', path.join('..', 'package.json')]) {
+    try {
+      const j = JSON.parse(fs.readFileSync(path.join(HERE, rel), 'utf8'));
+      if (j && typeof j.version === 'string') return j.version;
+    } catch { /* try next */ }
+  }
   return METIS_VERSION;
 }
 
