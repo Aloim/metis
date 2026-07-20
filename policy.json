@@ -1,0 +1,18 @@
+{
+  "name": "PhanesLight defaults",
+  "mandatedTools": [
+    "mcp__semble__search",
+    "mcp__semble__find_related"
+  ],
+  "configuredMcpServers": [
+    "semble",
+    "serena",
+    "context7",
+    "deepwiki"
+  ],
+  "phanesCliPatterns": [
+    "phanes\\.cmd",
+    "\\.phanes[\\\\/]scripts[\\\\/]cli\\.js",
+    "\\bphanes\\s+(session-audit|update-run|init|status)\\b"
+  ]
+}

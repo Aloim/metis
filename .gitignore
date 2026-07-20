@@ -1,0 +1,17 @@
+# Never publish: harvested run transcripts and audit reports are local test
+# artifacts. They can contain real session data and secrets from the projects
+# they were harvested from. Keep them out of the repository entirely.
+archive/
+reports/
+
+# Local runtime manifest written by a standalone run.
+.metis/
+
+# Usage is folded into README.md for the public release; this stays local.
+USAGE.md
+
+# Node / OS noise.
+node_modules/
+*.log
+.DS_Store
+Thumbs.db

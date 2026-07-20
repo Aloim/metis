@@ -1,0 +1,30 @@
+{
+  "name": "metis-audit",
+  "version": "0.2.0",
+  "description": "Session-audit companion for Claude Code: reads run transcripts and reports whether an agent setup actually used the tools it was told to, then proposes evidence-based optimizations. Standalone and Phanes-aware.",
+  "type": "module",
+  "bin": {
+    "metis": "metis.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "metis": "node metis.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "CC-BY-NC-4.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Aloim/metis"
+  },
+  "author": "Aloim",
+  "keywords": [
+    "claude-code",
+    "session-audit",
+    "phanes",
+    "companion",
+    "tool-adherence",
+    "observability"
+  ]
+}
