@@ -14,5 +14,9 @@
     "phanes\\.cmd",
     "\\.phanes[\\\\/]scripts[\\\\/]cli\\.js",
     "\\bphanes\\s+(session-audit|update-run|init|status)\\b"
-  ]
+  ],
+  "effortBridgePatterns": [
+    "\\bclaude\\b[\\s\\S]*?--effort\\b"
+  ],
+  "effortBaseline": "high"
 }

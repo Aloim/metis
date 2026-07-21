@@ -33,11 +33,13 @@ Metis installs like Phanes: you copy one file, `metis.md`, as your `/metis` comm
 
 Every optimization pass walks the same path:
 
-**1. Detect and gate.** Metis works out whether the project is standalone or Phanes-managed, whether a transcript directory exists, and whether there is anything to optimize at all. A setup with no MCP servers, no plugins, no skills, and no agents has nothing to build policy around, so Metis stops and says so rather than emitting an empty report. It also self-checks this repository for a newer release and surfaces the notice when one has shipped.
+**1. Detect and gate.** Metis works out whether the project is standalone or Phanes-managed, whether a transcript directory exists, and whether there is anything to optimize at all. A setup with no MCP servers, no plugins, no skills, and no agents has nothing to build policy around, so Metis stops and says so rather than emitting an empty report. It also self-checks this repository for a newer release; when one has shipped it asks whether to upgrade, and on yes runs `/metisupgrade`, which completely replaces the command and engine with the latest while preserving your audit state.
 
 **2. Census and consent.** It enumerates every installed capability, the MCP servers, plugins, skills, slash commands, and foreign agents, and probes each MCP server to see whether it is actually reachable and authenticated rather than merely configured. It then proposes a per-item selection. On a Phanes project the standard set (`context7`, `deepwiki`, `serena`, `semble`, `frontend-design`) is pre-selected and marked recommended; on a standalone project nothing is assumed and every item is listed unchecked by its detected name. Your selection persists, so the next run stays silent unless the set actually changes, and then it asks only about what changed. A server that is switched off or signed out can never be mandated, even if selected.
 
-**3. Audit the transcripts.** It streams the main-session JSONL and the volatile subagent task transcripts (harvesting them first, because the harness discards them). It aggregates, per session and per agent: tool use by name (MCP split into server and tool), models, tokens, spawns, and errors. Then it diffs actual usage against the policy: a tool that was mandated but never called, a server that was configured but never used, an agent that was never spawned. It runs a redacted secret scan over commands and tool results, and summarizes where the tokens went. A subagent's internal MCP use is invisible in the parent session; recovering it from the task store is the whole point.
+**3. Audit the transcripts.** It streams the main-session JSONL, the durable subagent transcripts under `<session>/subagents/` (the current Claude Code layout), and the volatile subagent task store (harvesting it first, because the harness discards it). It aggregates, per session and per agent: tool use by name (MCP split into server and tool), models, tokens, spawns, and errors. Then it diffs actual usage against the policy: a tool that was mandated but never called, a server that was configured but never used, an agent that was never spawned. It runs a redacted secret scan over commands and tool results, and summarizes where the tokens went. A subagent's internal MCP use is invisible in the parent session; recovering it from the subagent transcripts is the whole point.
+
+Beyond that binary check, Metis runs two **condition-aware** checks whose absence is only a finding when the precondition was present, so a tool that was correctly not needed stays silent. On a Phanes v3.2 project it reads the roster and thresholds to ask whether the **effort bridge** delivered an above-baseline archetype's rubric (or was spent downward for no gain), and whether the **orchestrator** was engaged for a plan at or above its step threshold (or over-engaged on a small task). What ran is read from the transcript; what should have run is read from the Phanes artifacts, at no model-token cost. Every such finding is advisory and carries its precondition and evidence.
 
 **4. Verify, then propose (Phanes mode).** Before proposing anything new, Metis scores its open ledger entries against the new sessions: delivered, not-yet-measurable, or regressed. A regression produces a rollback proposal. Only then does it propose new changes, and only from strong signals, with a cooldown so it never oscillates on the same knob. Each proposal is gated. Trigger lines, annotations, and flags may be applied and logged; merging or removing agents, removing mandates, and single-writer reassignments always ask first.
 
@@ -57,7 +59,7 @@ For direct or scripted use, call the engine dispatcher at `<engineDir>/metis.mjs
 | `metis.mjs ledger --project . --audit <report.json> --verify` | Verification-first scoring of the ledger (Phanes mode). `--propose` lists strong-signal proposals. |
 | `metis.mjs version --check` | Print the version and check the repository for a newer release. |
 
-Each piece also runs on its own from the source tree (`node src/census.mjs`, `node src/session-audit.mjs`, `node src/ledger.mjs`, `node src/policy.mjs`, `node src/version.mjs`), and `node --test` runs the suite.
+Each piece also runs on its own from the source tree (`node src/census.mjs`, `node src/session-audit.mjs`, `node src/ledger.mjs`, `node src/policy.mjs`, `node src/phanes-context.mjs`, `node src/version.mjs`), and `node --test` runs the suite.
 
 ### Policy derivation
 
@@ -115,7 +117,7 @@ Open a project in Claude Code and type:
 /metis
 ```
 
-The first run asks whether to install for all projects or just this one, fetches the engine into its folder, audits, and presents the checklist. Every later run does an update check and audits again. Anything after the command is treated as a directive, for example `/metis reinstall` or `/metis verify only`.
+The first run asks whether to install for all projects or just this one, fetches the engine into its folder, installs the sibling `/metisupgrade` command alongside, audits, and presents the checklist. Every later run does a version check and audits again; when a newer version is published it offers to upgrade in place with `/metisupgrade` (a complete command-and-engine replacement that preserves your audit state). Anything after the command is treated as a directive, for example `/metis reinstall` or `/metis verify only`.
 
 ### What the first run creates
 

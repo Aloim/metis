@@ -1,4 +1,4 @@
-<!-- Metis v0.3.0, 2026-07-20, self-bootstrapping session-audit companion for Claude Code.
+<!-- Metis v0.4.0, 2026-07-21, self-bootstrapping session-audit companion for Claude Code.
      ONE FILE to install: copy this metis.md to ~/.claude/commands/metis.md (global) or
      <project>/.claude/commands/metis.md (per project), then run /metis. On the first run it asks
      the install scope, fetches its own engine into a folder, and keeps a per-project run counter.
@@ -16,12 +16,19 @@ Audit whether this Claude Code setup actually uses the toolset it is configured 
 Constants for this version:
 
 - Repo: `Aloim/metis`. Raw base: `https://raw.githubusercontent.com/Aloim/metis/main`.
-- Engine files (fetched into the engine directory): `metis.mjs`, `census.mjs`, `policy.mjs`, `ledger.mjs`, `session-audit.mjs`, `version.mjs`, `policy.json`, each from `<raw-base>/src/<file>`.
+- Engine files (fetched into the engine directory): `metis.mjs`, `census.mjs`, `policy.mjs`, `ledger.mjs`, `session-audit.mjs`, `phanes-context.mjs`, `adherence.mjs`, `version.mjs`, `policy.json`, each from `<raw-base>/src/<file>`.
+- Upgrade command: `/metisupgrade` (file `metisupgrade.md`, fetched from `<raw-base>/MetisUpgrade.md`). It completely replaces the command and engine with the latest, preserving all audit state. `/metis` offers it on a newer-version detection; it can also be run directly.
 - This command's version stamp is on line 1 (`Metis vX.Y.Z`).
 
-## Step 0: Self-refresh (this command)
+## Step 0: Version check and upgrade offer
 
-Fetch `<raw-base>/metis.md` and read its line-1 version stamp. If it is newer than this file's stamp, overwrite the installed command file you were invoked from (`~/.claude/commands/metis.md` for a global install, `<project>/.claude/commands/metis.md` for a per-project install), tell the user Metis refreshed itself and to run `/metis` again, and **stop**. This mirrors the Phanes pre-flight and guarantees no run executes a stale command. The fetch is best effort: on a network failure, note it and continue with the current file.
+Fetch `<raw-base>/metis.md` and read its line-1 version stamp. Compare it to this file's stamp. The fetch is best effort: on a network failure, note it and continue with the current file.
+
+- **A newer version is published:** do **not** silently overwrite. Ask the user **one** `AskUserQuestion` (single select): "A newer Metis is available (`<installed>` to `<latest>`). Upgrade now? The upgrade replaces the command and engine with the latest and preserves all your audit state." Options: **Upgrade now (recommended)** / **Skip for this run**.
+  - **Upgrade now:** ensure the `/metisupgrade` command is installed (if `metisupgrade.md` is absent from the same commands directory as this file, fetch `<raw-base>/MetisUpgrade.md` into it first). Then invoke the `/metisupgrade` command to perform the complete replacement, and **stop** this run; tell the user to run `/metis` again once the upgrade finishes. If the harness cannot self-invoke a command, tell the user to run `/metisupgrade` now and stop.
+  - **Skip for this run:** continue with the current version, noting once that `<latest>` is available and can be installed later with `/metisupgrade`.
+  - **Non-interactive run:** do not upgrade unattended; note that `<latest>` is available and continue with the current version.
+- **Already current, or the check failed:** continue.
 
 ## Step 1: Resolve the install (scope, engine, run counter)
 
@@ -33,9 +40,10 @@ Detect the platform first (PowerShell on Windows, bash on POSIX) and run the mat
    - **Just this project:** engine and state both under `<project>/metis/`. Pick this when the command lives at `<project>/.claude/commands/metis.md`.
    Non-interactive run: default to **global**, record that it was unattended, and continue.
 3. **Fetch the engine** into the engine directory (create it first). Fetch each engine file from `<raw-base>/src/<file>`:
-   - POSIX: `for f in metis.mjs census.mjs policy.mjs ledger.mjs session-audit.mjs version.mjs policy.json; do curl -fsSL "<raw-base>/src/$f" -o "<engineDir>/$f"; done`
-   - PowerShell: `foreach ($f in 'metis.mjs','census.mjs','policy.mjs','ledger.mjs','session-audit.mjs','version.mjs','policy.json') { Invoke-WebRequest "<raw-base>/src/$f" -OutFile "<engineDir>\$f" }`
+   - POSIX: `for f in metis.mjs census.mjs policy.mjs ledger.mjs session-audit.mjs phanes-context.mjs adherence.mjs version.mjs policy.json; do curl -fsSL "<raw-base>/src/$f" -o "<engineDir>/$f"; done`
+   - PowerShell: `foreach ($f in 'metis.mjs','census.mjs','policy.mjs','ledger.mjs','session-audit.mjs','phanes-context.mjs','adherence.mjs','version.mjs','policy.json') { Invoke-WebRequest "<raw-base>/src/$f" -OutFile "<engineDir>\$f" }`
    If the fetch fails, stop and tell the user to check connectivity; do not fabricate an engine.
+4. **Install the sibling upgrade command.** Ensure `metisupgrade.md` sits in the same commands directory as this `metis.md` (per-project or global, matching where this command was invoked from). If it is absent, fetch `<raw-base>/MetisUpgrade.md` into it. Best effort: on a fetch failure, note it and continue; Step 0 re-attempts this before an upgrade.
 
 **State directory and artifact rules:**
 - **Global scope:** per-project state lives at `<project>/.metis/`. The global engine is shared; every project separates its own state, reports, and standalone manifest there.
@@ -49,9 +57,9 @@ Read `<stateDir>/state.json` if present: `{ version, installScope, engineDir, ru
 - **First run for this project** (`state.json` absent, or `runCount` is 0): this is **install + optimization**. Ensure the engine is present (fetch in Step 1 if it was missing), then run the optimization pass (Step 4). Afterwards write `state.json` with `runCount` 1.
 - **Later run** (`runCount` >= 1): this is **update check + optimization**. Do Step 3, then Step 4, then increment `runCount` and update `lastRun`.
 
-## Step 3: Update check (later runs)
+## Step 3: Engine version check (later runs)
 
-Run `node <engineDir>/metis.mjs version --check`. If it reports a newer release, re-fetch the engine files (Step 1.3) so the engine matches the current command, and say so. Best effort; never block the run on it.
+Run `node <engineDir>/metis.mjs version --check`. This is a secondary, engine-side signal to Step 0's command-stamp check. If it reports a newer release and Step 0 did not already run an upgrade this session, surface it once and point the user to `/metisupgrade` (which replaces the command and engine together and preserves state). Do **not** silently re-fetch individual engine files here: a partial refetch can leave the command and engine on mismatched versions. Best effort; never block the run on it.
 
 ## Step 4: The optimization pass
 
@@ -69,6 +77,12 @@ Invoke the engine as `node <engineDir>/metis.mjs <command>`. Always pass `--proj
    - Non-interactive: on a Phanes project default to the standard set, standalone select nothing, record the default, and continue.
 
 3. **Audit.** Skip if there is no transcript directory. `node <engineDir>/metis.mjs audit --project <project> --harvest <stateDir>/archive --out <stateDir>/reports --last <N>`. Harvest first, because the subagent task store is volatile. Read the JSON report and report in plain language: capabilities configured or granted but never called, servers mandated but unreachable, the split of spend between main session and subagents, and any redacted secret findings.
+
+   Also read the **`conditionalAdherence`** block (report section 3a). Unlike the binary flags above, these are **condition-aware**: they fire only when a tool's precondition was present, and stay silent otherwise (a tool absent when nothing called for it is correct, not a miss). Two checks, both advisory:
+   - **Effort bridge** (Phanes v3.2): an above-baseline archetype (roster `effort:` tier above the session baseline) that ran in-session rode the baseline; delivering its higher rubric needs a `claude ... --agent <name> --effort <level>` CLI spawn. `effort-under-lift` means it silently ran below its rubric; `effort-downward-bridge` means the bridge was spent at or below baseline for no gain. Not applicable when the baseline is already `xhigh` or no above-baseline archetype exists.
+   - **Orchestrator engagement** (Phanes v3.2, rule 11): a plan at or above `orchestratorStepThreshold` should be delegated to the `<slug>-orchestrator`. `orchestrator-under-engaged` means the primary self-orchestrated a plan-scale run; `orchestrator-over-engaged` means it engaged the orchestrator for a sub-threshold task (correct only if the invocation was explicitly narrowed). Plan scale is a transcript proxy (peak todos vs direct worker spawns); Phanes session-summaries corroborate. Not applicable when the roster has no orchestrator.
+
+   Surface each finding with its precondition and evidence; none is a mandate, and none is auto-applied.
 
 4. **Verify then propose (Phanes mode only).** First `node <engineDir>/metis.mjs ledger --project <project> --audit <report.json> --verify`: report each open entry's verdict (delivered, not-yet-measurable, regressed); a regression is an **ask-first** rollback proposal. Only then `--propose`: apply `autonomous`-gated items (trigger line, annotation, flag) and log each with `ledger ... --add '<entry-json>'`; present `ask-first` items (mandate removal, agent merge or removal, single-writer change) and apply only on the user's yes. The engine already respects the cooldown.
 

@@ -28,6 +28,12 @@ const PHANES_CLI_PATTERNS = [
   '\\bphanes\\s+(session-audit|update-run|init|status)\\b',
 ];
 
+// Effort-bridge (Phanes v3.2) CLI spawn signature, matched against Bash command
+// strings; detectEffortBridge adds a per-agent/background-flag guard.
+const EFFORT_BRIDGE_PATTERNS = [
+  '\\bclaude\\b[\\s\\S]*?--effort\\b',
+];
+
 function readJsonSafe(fp) {
   try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return null; }
 }
@@ -55,6 +61,7 @@ export function derivePolicy(projectPath, opts = {}) {
       configuredMcpServers: [...new Set(configuredMcpServers)],
       grantedServers: [...new Set(grantedServers)],
       phanesCliPatterns: PHANES_CLI_PATTERNS,
+      effortBridgePatterns: EFFORT_BRIDGE_PATTERNS,
       _selection: selection,
       _source: path.join(project, '.phanes', 'config.json'),
     };
@@ -72,6 +79,7 @@ export function derivePolicy(projectPath, opts = {}) {
     configuredMcpServers: [...new Set(configuredMcpServers)],
     grantedServers: [],
     phanesCliPatterns: PHANES_CLI_PATTERNS,
+    effortBridgePatterns: EFFORT_BRIDGE_PATTERNS,
     _source: '(inferred from detection)',
   };
 }

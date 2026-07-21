@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const METIS_REPO = 'Aloim/metis';
-export const METIS_VERSION = '0.3.0';
+export const METIS_VERSION = '0.4.0';
 const RAW_PACKAGE_URL = `https://raw.githubusercontent.com/${METIS_REPO}/main/package.json`;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));

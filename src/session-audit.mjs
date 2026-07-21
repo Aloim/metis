@@ -16,6 +16,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { derivePolicy } from './policy.mjs';
+import { buildPhanesContext } from './phanes-context.mjs';
+import { computeAdherence } from './adherence.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI parsing
@@ -96,6 +98,15 @@ const DEFAULT_POLICY = {
     '\\.phanes[\\\\/]scripts[\\\\/]cli\\.js',
     '\\bphanes\\s+(session-audit|update-run|init|status)\\b',
   ],
+  // Effort-bridge (Phanes v3.2) CLI spawns, matched against Bash command
+  // strings. detectEffortBridge additionally requires a per-agent/background
+  // flag so an unrelated claude invocation cannot match.
+  effortBridgePatterns: [
+    '\\bclaude\\b[\\s\\S]*?--effort\\b',
+  ],
+  // Assumed session effort baseline when the Phanes config does not state one
+  // (Phanes v3.2 launches high by default). Used by the effort-bridge check.
+  effortBaseline: 'high',
 };
 
 function loadPolicy(policyPath, scriptDir) {
@@ -157,6 +168,8 @@ function newAggregate(kind, id) {
     toolResultErrors: 0,
     agentType: null,      // for agent aggregates, if discoverable
     parentSession: null,  // for agent aggregates
+    maxTodoCount: 0,      // peak TodoWrite list length (plan-scale proxy)
+    effortBridgeSpawns: [],// effort-bridge CLI spawns: { agent, level }
   };
 }
 
@@ -246,12 +259,19 @@ async function processFile(filePath, ctx, opts = {}) {
           agg.mcpByServer[server][tool] = (agg.mcpByServer[server][tool] || 0) + 1;
         }
 
+        // TodoWrite: peak list length is a plan-scale proxy for the
+        // orchestrator-engagement check.
+        if (name === 'TodoWrite' && b.input && Array.isArray(b.input.todos)) {
+          if (b.input.todos.length > agg.maxTodoCount) agg.maxTodoCount = b.input.todos.length;
+        }
+
         if (name === 'Bash' && b.input && typeof b.input.command === 'string') {
           const cmd = b.input.command;
           for (const re of phanesRes) {
             re.lastIndex = 0;
             if (re.test(cmd)) { agg.phanesCliCount++; break; }
           }
+          detectEffortBridge(cmd, agg, ctx.effortBridgeRes);
           scanSecrets(cmd, filePath, 'bash-command', secretHits);
         }
       }
@@ -265,6 +285,25 @@ async function processFile(filePath, ctx, opts = {}) {
       }
     }
   }
+}
+
+// Detect an effort-bridge CLI spawn in an EXECUTED Bash command (Phanes v3.2):
+// `claude ... --agent <name> --effort <level> ...` run in a background /
+// non-interactive mode to lift one agent above the session baseline. Scanning
+// only Bash tool_use command strings means prose that merely MENTIONS the
+// bridge never matches; a match is an actual invocation. Records { agent, level }.
+function detectEffortBridge(cmd, agg, effortBridgeRes) {
+  if (!/\bclaude\b/.test(cmd) || !/--effort\b/.test(cmd)) return;
+  // A real bridge spawn pairs --effort with a per-agent / background flag;
+  // guard against matching an unrelated claude invocation.
+  if (!/--(?:agent|bg|background)\b/.test(cmd)) return;
+  if (effortBridgeRes && effortBridgeRes.length && !effortBridgeRes.some(re => { re.lastIndex = 0; return re.test(cmd); })) return;
+  const am = cmd.match(/--agent[=\s]+["']?([A-Za-z0-9._-]+)/);
+  const em = cmd.match(/--effort[=\s]+["']?([A-Za-z]+)/);
+  agg.effortBridgeSpawns.push({
+    agent: am ? am[1] : null,
+    level: em ? em[1].toLowerCase() : null,
+  });
 }
 
 // Secret scan over a text blob; records deduped, redacted hits.
@@ -332,6 +371,53 @@ function topTools(agg, n = 8) {
     .slice(0, n)
     .map(([k, v]) => `${k}×${v}`)
     .join(', ') || '(none)';
+}
+
+// Render the condition-aware adherence section. Each block states its
+// precondition, stays silent (applicable:false) when nothing called for the
+// tool, and marks every finding advisory. Ground truth for what ran is the
+// transcript; what SHOULD have run comes from the Phanes context.
+function renderAdherence(ctx, L) {
+  L.push(`## 3a. Conditional Tool Adherence (effort bridge, orchestrator)`);
+  L.push('');
+  const ad = ctx.adherence;
+  if (!ad) {
+    L.push(`_Not evaluated: no \`--project\` was given, so the Phanes context (roster, thresholds, effort baseline) could not be read. Re-run with \`--project <root>\` to enable these checks._`);
+    L.push('');
+    return;
+  }
+  const c = ad.context || {};
+  L.push(`Context: mode \`${c.mode || '?'}\`, effort baseline \`${c.baseline || '?'}\`, orchestrator threshold ${c.threshold ?? '?'}, orchestrator archetype ${c.orchestrator ? '`' + c.orchestrator + '`' : '(none in roster)'}. Findings are advisory: a tool absent when its precondition was also absent is correct, not a miss.`);
+  L.push('');
+
+  const block = (title, res) => {
+    L.push(`### ${title}`);
+    if (!res || res.applicable === false) {
+      L.push(`- Not applicable: ${res ? res.reason : 'no data'}`);
+      L.push('');
+      return;
+    }
+    if (res.findings && res.findings.length) {
+      for (const f of res.findings) {
+        L.push(`- **[${f.severity}] ${f.code}** ${f.message}`);
+        if (f.evidence) L.push(`  - Evidence: ${f.evidence}`);
+      }
+    } else {
+      L.push(`- No mismatch: every precondition that fired was matched by correct use.`);
+    }
+    if (res.confirmations && res.confirmations.length) {
+      for (const cf of res.confirmations) L.push(`  - Confirmed: ${cf}`);
+    }
+    L.push('');
+  };
+
+  block('Effort bridge', ad.effortBridge);
+  block('Orchestrator engagement', ad.orchestrator);
+  if (ad.orchestrator && ad.orchestrator.applicable && ad.orchestrator.phanesPlanEvidence) {
+    const pe = ad.orchestrator.phanesPlanEvidence;
+    L.push(`_Phanes plan corroboration: ${pe.summaryCount} session-summary file(s), largest recovered batch ${pe.maxSteps} step(s). Plan scale in the per-session check is a transcript proxy (peak todos vs direct worker spawns)._`);
+    L.push('');
+  }
 }
 
 function renderMarkdown(ctx) {
@@ -517,6 +603,9 @@ function renderMarkdown(ctx) {
   }
   L.push('');
 
+  // --- Conditional adherence (effort bridge, orchestrator) ---
+  renderAdherence(ctx, L);
+
   // --- Secret findings (redacted) ---
   L.push(`## 4. Secret Scan (redacted)`);
   L.push('');
@@ -567,6 +656,7 @@ function buildJson(ctx) {
     toolCounts: a.toolCounts, mcpByServer: a.mcpByServer,
     phanesCliCount: a.phanesCliCount, spawnedAgents: a.spawnedAgents,
     spawnedAgentTypes: a.spawnedAgentTypes,
+    maxTodoCount: a.maxTodoCount, effortBridgeSpawns: a.effortBridgeSpawns,
     toolResults: a.toolResults, toolResultErrors: a.toolResultErrors,
     firstTs: a.firstTs, lastTs: a.lastTs,
   });
@@ -586,6 +676,7 @@ function buildJson(ctx) {
       configuredNeverCalled: flags.configuredNeverCalled,
       mcpServersObserved: [...flags.usedServers],
     },
+    conditionalAdherence: ctx.adherence || null,
     tokenEconomics: econ,
     secretFindings: [...ctx.secretHits.map.values()], // already redacted
   };
@@ -739,6 +830,46 @@ async function ingestTaskStore(tasksDir, ctx, agentTypeMap) {
   return counts;
 }
 
+// Ingest durable subagent transcripts from the current Claude Code layout:
+//   <dir>/<session-uuid>/subagents/agent-<id>.jsonl
+// Each file is a sidechain transcript keyed by the agent id in its filename.
+// Labelled from agentTypeMap where possible. Idempotent per run; skips empty
+// files and the sibling .meta.json descriptors.
+async function ingestSubagentDirs(dir, ctx, agentTypeMap) {
+  const counts = { transcripts: 0, empties: 0, sessions: 0 };
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return counts; }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const subDir = path.join(dir, e.name, 'subagents');
+    if (!fs.existsSync(subDir)) continue;
+    let files = [];
+    try { files = fs.readdirSync(subDir).filter(f => f.startsWith('agent-') && f.endsWith('.jsonl')); } catch { continue; }
+    if (!files.length) continue;
+    counts.sessions++;
+    for (const f of files) {
+      const fp = path.join(subDir, f);
+      let size = 0; try { size = fs.statSync(fp).size; } catch { continue; }
+      if (size === 0) { counts.empties++; continue; }
+      const id = f.replace(/\.jsonl$/, '').replace(/^agent-/, '');
+      // Skip if this agent id was already ingested (e.g. an inline agent-*.jsonl
+      // at the top level, or the Temp store) to avoid double counting.
+      if (ctx.agents[id]) continue;
+      counts.transcripts++;
+      await processFile(fp, ctx, { forceAgentKey: id, parentSession: e.name, isTaskFile: true });
+      const agg = ctx.agents[id];
+      if (agg) {
+        const info = agentTypeMap[id];
+        if (info) { agg.agentType = info.subagentType; if (!agg.parentSession) agg.parentSession = info.parentSession; }
+        else if (!agg.agentType) agg.agentType = '(unlabeled)';
+        if (!agg.parentSession) agg.parentSession = e.name;
+        agg.fromSubagentDir = true;
+      }
+    }
+  }
+  return counts;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -764,6 +895,7 @@ async function main() {
     ? derivePolicy(args.project)
     : loadPolicy(args.policy, scriptDir);
   const phanesRes = (policy.phanesCliPatterns || []).map(p => new RegExp(p, 'g'));
+  const effortBridgeRes = (policy.effortBridgePatterns || []).map(p => new RegExp(p, 'i'));
 
   // Identify main session files vs sidechain agent files.
   const all = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
@@ -786,7 +918,7 @@ async function main() {
   ];
 
   const ctx = {
-    dir, policy, phanesRes,
+    dir, policy, phanesRes, effortBridgeRes,
     sessions: {}, agents: {},
     secretHits: { map: new Map() },
     uuidToAgent: {},
@@ -795,13 +927,29 @@ async function main() {
     currentSession: null,
     tasksDir: null,
     taskCounts: null,
+    subagentDirCounts: null,
     harvestStats: null,
+    adherence: null,
   };
 
   for (const fp of filesToProcess) {
     ctx.currentSession = path.basename(fp).replace(/\.jsonl$/, '').replace(/^agent-/, '');
     await processFile(fp, ctx);
     ctx.filesAudited++;
+  }
+
+  // Correlate task/subagent transcripts to their subagent_type via all main
+  // sessions. Built once and reused by both durable and Temp ingestion.
+  const agentTypeMap = await buildAgentTypeMap(dir);
+
+  // --- v0.4: durable subagent transcripts (current Claude Code layout) ---
+  // Modern builds write subagent transcripts to
+  // <dir>/<session-uuid>/subagents/agent-<id>.jsonl (durable, alongside the
+  // volatile Temp store). Always ingested: this is where an orchestrator's own
+  // batch behaviour and any in-subagent tool use are visible.
+  ctx.subagentDirCounts = await ingestSubagentDirs(dir, ctx, agentTypeMap);
+  if (ctx.subagentDirCounts.transcripts) {
+    console.log(`[subagents] ingested ${ctx.subagentDirCounts.transcripts} durable subagent transcript(s) across ${ctx.subagentDirCounts.sessions} session dir(s)`);
   }
 
   // --- v0.1: Temp task store (subagent transcripts) ---
@@ -818,8 +966,6 @@ async function main() {
         console.log(`[harvest] ${ctx.harvestStats.copied} copied, ${ctx.harvestStats.skipped} skipped (already archived), ${(ctx.harvestStats.bytes / 1048576).toFixed(1)} MB, ${ctx.harvestStats.sessions} session(s) -> ${path.join(destDir, path.basename(tasksDir))}`);
       }
 
-      // Correlate task transcripts to their subagent_type via all main sessions.
-      const agentTypeMap = await buildAgentTypeMap(dir);
       ctx.taskCounts = await ingestTaskStore(tasksDir, ctx, agentTypeMap);
       console.log(`[tasks] ingested ${ctx.taskCounts.transcripts} subagent transcript(s), scanned ${ctx.taskCounts.rawOutputs} raw output(s), skipped ${ctx.taskCounts.empties} empty file(s) across ${ctx.taskCounts.sessions} session dir(s)`);
     } else {
@@ -831,6 +977,21 @@ async function main() {
   // Task/Agent tool_use ids (in-file linkage), if present.
   for (const agg of Object.values(ctx.agents)) {
     if (!agg.agentType && ctx.uuidToAgent[agg.id]) agg.agentType = ctx.uuidToAgent[agg.id];
+  }
+
+  // --- v0.4: condition-aware adherence (effort bridge, orchestrator) ---
+  // Reasons about whether two CONDITIONAL Phanes tools were used when their
+  // precondition was present. Best effort: any failure leaves adherence null
+  // and the rest of the report intact.
+  try {
+    const project = args.project ? path.resolve(args.project) : null;
+    if (project) {
+      const phanes = buildPhanesContext(project);
+      const actors = [...Object.values(ctx.sessions), ...Object.values(ctx.agents)];
+      ctx.adherence = { ...computeAdherence(actors, phanes), context: { mode: phanes.mode, threshold: phanes.threshold, baseline: phanes.baseline, orchestrator: phanes.orchestrator ? phanes.orchestrator.name : null } };
+    }
+  } catch (e) {
+    console.error(`[adherence] skipped: ${e && e.message ? e.message : e}`);
   }
 
   const md = renderMarkdown(ctx);

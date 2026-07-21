@@ -19,6 +19,12 @@ import {
   ledgerPathFor,
 } from './src/ledger.mjs';
 import { derivePolicy } from './src/policy.mjs';
+import {
+  parseFrontmatter, readRoster, effortRank, buildPhanesContext,
+} from './src/phanes-context.mjs';
+import {
+  effortBridgeAdherence, orchestratorAdherence, computeAdherence,
+} from './src/adherence.mjs';
 
 let counter = 0;
 function tmpProject() {
@@ -276,6 +282,143 @@ test('candidateProposals: window too small yields no proposals', () => {
   const audit = { sessions: [{ id: 's1', mcpByServer: {} }], agents: [] };
   const r = candidateProposals(audit, { configuredMcpServers: ['semble'], grantedServers: [] }, { entries: [] }, { minSessions: 3 });
   assert.equal(r.proposals.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// phanes-context: frontmatter, roster, effort ranking, context assembly
+// ---------------------------------------------------------------------------
+test('effortRank orders medium < high < xhigh; unknown is 0', () => {
+  assert.ok(effortRank('medium') < effortRank('high'));
+  assert.ok(effortRank('high') < effortRank('xhigh'));
+  assert.equal(effortRank('bogus'), 0);
+  assert.equal(effortRank(null), 0);
+});
+
+test('parseFrontmatter reads flat scalars, ignores body', () => {
+  const fm = parseFrontmatter('---\nname: acme-critic\neffort: "xhigh"\n---\nbody effort: medium');
+  assert.equal(fm.name, 'acme-critic');
+  assert.equal(fm.effort, 'xhigh');
+});
+
+function writeAgent(dir, name, effort) {
+  fs.mkdirSync(dir, { recursive: true });
+  const fm = effort ? `---\nname: ${name}\neffort: ${effort}\n---\n` : `---\nname: ${name}\n---\n`;
+  fs.writeFileSync(path.join(dir, name + '.md'), fm + 'operating protocol\n');
+}
+
+test('readRoster parses effort and flags the orchestrator', () => {
+  const p = tmpProject();
+  const adir = path.join(p, '.claude', 'agents');
+  writeAgent(adir, 'acme-architect', 'xhigh');
+  writeAgent(adir, 'acme-executor', 'high');
+  writeAgent(adir, 'acme-orchestrator', 'high');
+  const roster = readRoster(p);
+  const byName = Object.fromEntries(roster.map(r => [r.name, r]));
+  assert.equal(byName['acme-architect'].effort, 'xhigh');
+  assert.equal(byName['acme-orchestrator'].isOrchestrator, true);
+  assert.equal(byName['acme-executor'].isOrchestrator, false);
+});
+
+test('buildPhanesContext reads threshold, baseline, above-baseline set', () => {
+  const p = tmpProject();
+  fs.mkdirSync(path.join(p, '.phanes'), { recursive: true });
+  fs.writeFileSync(path.join(p, '.phanes', 'config.json'),
+    JSON.stringify({ orchestratorStepThreshold: 7 }));
+  const adir = path.join(p, '.claude', 'agents');
+  writeAgent(adir, 'acme-architect', 'xhigh');
+  writeAgent(adir, 'acme-orchestrator', 'high');
+  const ctx = buildPhanesContext(p);
+  assert.equal(ctx.mode, 'phanes');
+  assert.equal(ctx.threshold, 7);
+  assert.equal(ctx.baseline, 'high');
+  assert.equal(ctx.orchestrator.name, 'acme-orchestrator');
+  assert.deepEqual(ctx.aboveBaseline.map(a => a.name), ['acme-architect']);
+});
+
+// ---------------------------------------------------------------------------
+// adherence: effort bridge
+// ---------------------------------------------------------------------------
+const PH = (over) => ({
+  baseline: 'high',
+  aboveBaseline: [{ name: 'acme-architect', effort: 'xhigh' }],
+  threshold: 5,
+  orchestrator: { name: 'acme-orchestrator' },
+  planScale: { summaryCount: 0, maxSteps: 0 },
+  ...over,
+});
+
+test('effort bridge: under-lift when above-baseline archetype rides baseline in-session', () => {
+  const actors = [{ kind: 'session', id: 's1', spawnedAgentTypes: { 'acme-architect': 1 }, effortBridgeSpawns: [] }];
+  const r = effortBridgeAdherence(actors, PH());
+  assert.equal(r.applicable, true);
+  assert.ok(r.findings.some(f => f.code === 'effort-under-lift'));
+});
+
+test('effort bridge: confirmation when the archetype was lifted via the bridge', () => {
+  const actors = [
+    { kind: 'session', id: 's1', spawnedAgentTypes: { 'acme-architect': 1 }, effortBridgeSpawns: [] },
+    { kind: 'agent', id: 'a1', spawnedAgentTypes: {}, effortBridgeSpawns: [{ agent: 'acme-architect', level: 'xhigh' }] },
+  ];
+  const r = effortBridgeAdherence(actors, PH());
+  assert.equal(r.findings.filter(f => f.code === 'effort-under-lift').length, 0);
+  assert.ok(r.confirmations.some(c => c.includes('acme-architect')));
+});
+
+test('effort bridge: downward spawn at/below baseline is flagged', () => {
+  const actors = [{ kind: 'session', id: 's1', spawnedAgentTypes: {}, effortBridgeSpawns: [{ agent: 'acme-executor', level: 'high' }] }];
+  const r = effortBridgeAdherence(actors, PH());
+  assert.ok(r.findings.some(f => f.code === 'effort-downward-bridge'));
+});
+
+test('effort bridge: not applicable when baseline is already xhigh', () => {
+  const r = effortBridgeAdherence([], PH({ baseline: 'xhigh', aboveBaseline: [] }));
+  assert.equal(r.applicable, false);
+});
+
+test('effort bridge: not applicable when no above-baseline archetype exists', () => {
+  const r = effortBridgeAdherence([], PH({ aboveBaseline: [] }));
+  assert.equal(r.applicable, false);
+});
+
+// ---------------------------------------------------------------------------
+// adherence: orchestrator engagement
+// ---------------------------------------------------------------------------
+test('orchestrator: under-engaged when a plan-scale session self-orchestrates', () => {
+  const actors = [{ kind: 'session', id: 'sess1234', spawnedAgentTypes: { 'general-purpose': 6 }, maxTodoCount: 8 }];
+  const r = orchestratorAdherence(actors, PH());
+  assert.equal(r.applicable, true);
+  assert.ok(r.findings.some(f => f.code === 'orchestrator-under-engaged'));
+});
+
+test('orchestrator: confirmation when engaged on a plan-scale run', () => {
+  const actors = [{ kind: 'session', id: 'sess1234', spawnedAgentTypes: { 'acme-orchestrator': 2 }, maxTodoCount: 9 }];
+  const r = orchestratorAdherence(actors, PH());
+  assert.equal(r.findings.length, 0);
+  assert.ok(r.confirmations.length >= 1);
+});
+
+test('orchestrator: over-engaged when engaged on a sub-threshold task', () => {
+  const actors = [{ kind: 'session', id: 'sess1234', spawnedAgentTypes: { 'acme-orchestrator': 1 }, maxTodoCount: 2 }];
+  const r = orchestratorAdherence(actors, PH());
+  assert.ok(r.findings.some(f => f.code === 'orchestrator-over-engaged'));
+});
+
+test('orchestrator: sub-threshold, not engaged -> silent', () => {
+  const actors = [{ kind: 'session', id: 'sess1234', spawnedAgentTypes: { 'general-purpose': 2 }, maxTodoCount: 3 }];
+  const r = orchestratorAdherence(actors, PH());
+  assert.equal(r.findings.length, 0);
+});
+
+test('orchestrator: not applicable when no orchestrator in roster', () => {
+  const r = orchestratorAdherence([], PH({ orchestrator: null }));
+  assert.equal(r.applicable, false);
+});
+
+test('computeAdherence returns both check results', () => {
+  const r = computeAdherence([], PH({ aboveBaseline: [], orchestrator: null }));
+  assert.ok(r.effortBridge && r.orchestrator);
+  assert.equal(r.effortBridge.applicable, false);
+  assert.equal(r.orchestrator.applicable, false);
 });
 
 // ---------------------------------------------------------------------------
